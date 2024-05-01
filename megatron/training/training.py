@@ -552,6 +552,15 @@ def train_step(forward_step_func, data_iterator,
         model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
 
+    gpt_model = model[0].module._modules['module']
+        if (iteration > os.getenv('FAILED_ITER') and torch.distributed.get_rank() == 1):
+            print("Im Zeroing it!")
+            for layer in gpt_model.language_model.encoder.layers:
+                if hasattr(layer, 'reset_parameters'):
+                    layer.reset_parameters()
+                else:
+                for param in layer.parameters():
+                    param.data.zero_()
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
     losses_reduced = forward_backward_func(
@@ -572,6 +581,11 @@ def train_step(forward_step_func, data_iterator,
     if getattr(args, 'vision_pretraining', False) and args.vision_pretraining_type == "dino":
         unwrapped_model = unwrap_model(model[0])
         unwrapped_model.cancel_gradients_last_layer(args.curr_iteration)
+
+    if (iteration > os.getenv('FAILED_ITER') and torch.distributed.get_rank() == 1):
+            print("Zeroing Backprop")
+            for layer in gpt_model.language_model.encoder.layers:
+            layer.zero_grad
 
     # Update parameters.
     timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
