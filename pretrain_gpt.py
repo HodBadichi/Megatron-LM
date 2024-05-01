@@ -1,6 +1,6 @@
 # Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
 """Pretrain GPT."""
-
+import pickle
 import os
 import torch
 from functools import partial
@@ -100,12 +100,18 @@ def get_batch(data_iterator):
     # TODO: this is pretty hacky, find a better way
     if (not mpu.is_pipeline_first_stage()) and (not mpu.is_pipeline_last_stage()):
         return None, None, None, None, None
-
+    args = get_args()
     # get batches based on the TP rank you are on
     batch = get_batch_on_this_tp_rank(data_iterator)
 
     # slice batch along sequence dimension for context parallelism
     batch = get_batch_on_this_cp_rank(batch)
+
+    '''if (args.test_mode):
+        with open("fixed_batch.pkl", "rb") as f:
+            fixed_batch = pickle.load(f)
+        return fixed_batch.values()'''
+
 
     return batch.values()
 
@@ -158,7 +164,15 @@ def forward_step(data_iterator, model: GPTModel):
         tokens, labels, loss_mask, attention_mask, position_ids = get_batch(
             data_iterator)
     timers('batch-generator').stop()
+    '''
+    if (args.test_mode and torch.distributed.get_rank() == 0):
+       gpt_model = model.module._modules['module']
+       for layer in gpt_model.language_model.encoder.layers:
+           for param in layer.parameters():
+               param.data.fill_(1)
 
+    torch.distributed.barrier()
+    '''
     with stimer:
         output_tensor = model(tokens, position_ids, attention_mask,
                               labels=labels)

@@ -547,15 +547,27 @@ def train_step(forward_step_func, data_iterator,
     args = get_args()
     timers = get_timers()
 
+    def assert_all_parameters_zero_grads(layer):
+        for name, param in layer.named_parameters():
+            if (param.grad is None):
+                continue
+            if not torch.allclose(param.grad, torch.zeros_like(param)):
+                raise ValueError(f"Not all parameter gradients of layer '{layer_name}' are zero.")
+
+        for name, child in layer.named_children():
+            assert_all_parameters_zero_grads(child)
+
     # Set grad to zero.
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
 
     gpt_model = model[0].module._modules['module']
-    if (iteration > int(os.getenv('FAILED_ITER')) and torch.distributed.get_rank() == 1):
-        print("Im Zeroing it!")
+    print(f"Iteration: {iteration}")
+    if (torch.distributed.get_rank() == 1 and iteration == 0) :
+        print("Im Zeroing it with iteration 0...")
         for layer in gpt_model.language_model.encoder.layers:
+            assert_all_parameters_zero_grads(layer)
             if hasattr(layer, 'reset_parameters'):
                 layer.reset_parameters()
             else:
@@ -572,7 +584,6 @@ def train_step(forward_step_func, data_iterator,
         micro_batch_size=args.micro_batch_size,
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False)
-
     # Empty unused memory.
     if args.empty_unused_memory_level >= 1:
         torch.cuda.empty_cache()
@@ -582,14 +593,72 @@ def train_step(forward_step_func, data_iterator,
         unwrapped_model = unwrap_model(model[0])
         unwrapped_model.cancel_gradients_last_layer(args.curr_iteration)
 
-    if (iteration > int(os.getenv('FAILED_ITER')) and torch.distributed.get_rank() == 1):
-        print("Zeroing Backprop")
+    if (torch.distributed.get_rank() == 1):
         for layer in gpt_model.language_model.encoder.layers:
             layer.zero_grad()
-
+            assert_all_parameters_zero_grads(layer)
+            
     # Update parameters.
+
+
+    gpt_model = model[0].module._modules['module']
+    gpt_layers = gpt_model.language_model.encoder.layers
+
+    def all_zeros_or_nans(tensor):
+        """
+        Returns True if all values in the input tensor are either 0 or NaN, False otherwise.
+        """
+        nans_count = torch.sum(torch.isnan(tensor))
+        zeros_count = torch.sum(torch.eq(tensor,0))
+        tmp_sum = nans_count + zeros_count
+        total_elements = torch.numel(tensor)
+        if total_elements != tmp_sum:
+            return False
+        return True
+
+    def assert_all_parameters_zeros_or_nans(index, layer):
+        """
+        Recursively checks if all parameters in the given model are either 0 or NaN.
+        Raises an AssertionError if any parameter contains values other than 0 or NaN.
+
+        Args:
+        model (torch.nn.Module): The PyTorch model to be checked.
+        """
+        for name, param in layer.named_parameters():
+            if not all_zeros_or_nans(param):
+                print(param)
+                raise AssertionError(f"Parameter '{name}' contains values other than 0 or NaN. Index: {index}")
+
+        for name, child in layer.named_children():
+            assert_all_parameters_zeros_or_nans(index, child)
+
+
+
     timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
+    if (torch.distributed.get_rank() == 1):
+        print("@@@@@@@@@@@@@@@Before update@@@@@@@@@@@@@@@@@@@@@@@@@@")
+        for index, layer_tmp in enumerate(gpt_layers):
+            assert_all_parameters_zeros_or_nans(index, layer_tmp)
+        print("@@@@@@@@@@@@@@@Before update SUCCESSFUL@@@@@@@@@@@@@@@@@@@@@@@@@@")
+
+    print(iteration)
+    if (iteration == 16 and torch.distributed.get_rank() == 1):
+        print("@@@@@@@@@@@@@@@@@@@@#@!%$#^$#^&#$^#$^#$@^@#$^#$^")
+        for layer_tmp2 in gpt_layers:
+            print(layer_tmp2)
+    print("111111111111111111111111111111111111111111111111111111111111")
+        
+    print(gpt_layers[0].self_attention.layernorm_qkv.layer_norm_weight)
     update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+
+    if (torch.distributed.get_rank() == 1):
+        print("@@@@@@@@@@@@@@@@@@@@@@@@Post update@@@@@@@@@@@@@@@@@@@@")
+#        for index, layer_tmp in enumerate(gpt_layers):
+ #           assert_all_parameters_zeros_or_nans(index, layer_tmp)
+        
+        print(gpt_layers[0].self_attention.layernorm_qkv.layer_norm_weight)
+        print("@@@@@@@@@@@@@@@@@@@@@@@@Post update SUCESSFUL@@@@@@@@@@@@@@@@@@@@")
+
     timers('optimizer').stop()
 
     # Vision momentum.
@@ -617,6 +686,8 @@ def train_step(forward_step_func, data_iterator,
         for key in losses_reduced[0]:
             losses_reduced_for_key = [x[key] for x in losses_reduced]
             loss_reduced[key] = sum(losses_reduced_for_key) / len(losses_reduced_for_key)
+        if (torch.distributed.get_rank() == 0):
+            print(f" Forward Test Result Start: {loss_reduced} Forward Test Result End")
         return loss_reduced, skipped_iter, grad_norm, num_zeros_in_grad
     return {}, skipped_iter, grad_norm, num_zeros_in_grad
 
@@ -1035,7 +1106,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                        optimizer,
                        opt_param_scheduler,
                        config,
-                       args.iteration
+                       iteration
                        )
         iteration += 1
         batch_size = mpu.get_data_parallel_world_size() * \

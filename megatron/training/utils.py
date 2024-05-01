@@ -287,7 +287,6 @@ def get_batch_on_this_tp_rank(data_iterator):
            data = next(data_iterator)
        else:
            data = None
-
        batch = {
            'tokens': data["tokens"].cuda(non_blocking = True),
            'labels': data["labels"].cuda(non_blocking = True),
