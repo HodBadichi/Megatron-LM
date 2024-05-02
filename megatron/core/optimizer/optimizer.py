@@ -356,7 +356,9 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
             timers('optimizer-inner-step', log_level=1).start(
                 barrier=self.config.barrier_with_L1_time
             )
-        self.optimizer.step()
+        if (torch.distributed.get_rank() == 0):
+            self.optimizer.step()
+        
         if timers is not None:
             timers('optimizer-inner-step').stop()
 
@@ -494,8 +496,15 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
 
     def _copy_model_grads_to_main_grads(self):
         # This only needs to be done for the float16 group.
+
+        rank = torch.distributed.get_rank()
+
         for model_group, main_group in zip(self.float16_groups, self.fp32_from_float16_groups):
             for model_param, main_param in zip(model_group, main_group):
+
+                if (rank == 1 and model_param.grad != 0  and model_param.grad is not None):
+                    raise BaseException(f"Expected all Zeros model_group: {model_group}")
+
                 if hasattr(model_param, 'main_grad'):
                     main_param.grad = model_param.main_grad.float()
                 else:
@@ -510,6 +519,8 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
         # For fp32 grads, we need to reset the grads to main grad.
         for model_group in self.fp32_from_fp32_groups:
             for model_param in model_group:
+                if (rank == 1 and model_param.grad != 0 ):
+                    raise BaseException(f"Expected all Zeros model_group: {model_group}")
                 model_param.grad = model_param.main_grad
 
     def _copy_main_params_to_model_params(self):

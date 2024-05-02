@@ -563,9 +563,7 @@ def train_step(forward_step_func, data_iterator,
     optimizer.zero_grad()
 
     gpt_model = model[0].module._modules['module']
-    print(f"Iteration: {iteration}")
     if (torch.distributed.get_rank() == 1 and iteration == 0) :
-        print("Im Zeroing it with iteration 0...")
         for layer in gpt_model.language_model.encoder.layers:
             assert_all_parameters_zero_grads(layer)
             if hasattr(layer, 'reset_parameters'):
@@ -573,6 +571,8 @@ def train_step(forward_step_func, data_iterator,
             else:
               for param in layer.parameters():
                 param.data.zero_()
+        optimizer.reload_model_params()
+
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
     losses_reduced = forward_backward_func(
@@ -599,8 +599,6 @@ def train_step(forward_step_func, data_iterator,
             assert_all_parameters_zero_grads(layer)
             
     # Update parameters.
-
-
     gpt_model = model[0].module._modules['module']
     gpt_layers = gpt_model.language_model.encoder.layers
 
@@ -626,7 +624,6 @@ def train_step(forward_step_func, data_iterator,
         """
         for name, param in layer.named_parameters():
             if not all_zeros_or_nans(param):
-                print(param)
                 raise AssertionError(f"Parameter '{name}' contains values other than 0 or NaN. Index: {index}")
 
         for name, child in layer.named_children():
@@ -635,30 +632,16 @@ def train_step(forward_step_func, data_iterator,
 
 
     timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
+
     if (torch.distributed.get_rank() == 1):
-        print("@@@@@@@@@@@@@@@Before update@@@@@@@@@@@@@@@@@@@@@@@@@@")
         for index, layer_tmp in enumerate(gpt_layers):
             assert_all_parameters_zeros_or_nans(index, layer_tmp)
-        print("@@@@@@@@@@@@@@@Before update SUCCESSFUL@@@@@@@@@@@@@@@@@@@@@@@@@@")
 
-    print(iteration)
-    if (iteration == 16 and torch.distributed.get_rank() == 1):
-        print("@@@@@@@@@@@@@@@@@@@@#@!%$#^$#^&#$^#$^#$@^@#$^#$^")
-        for layer_tmp2 in gpt_layers:
-            print(layer_tmp2)
-    print("111111111111111111111111111111111111111111111111111111111111")
-        
-    print(gpt_layers[0].self_attention.layernorm_qkv.layer_norm_weight)
     update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
 
     if (torch.distributed.get_rank() == 1):
-        print("@@@@@@@@@@@@@@@@@@@@@@@@Post update@@@@@@@@@@@@@@@@@@@@")
-#        for index, layer_tmp in enumerate(gpt_layers):
- #           assert_all_parameters_zeros_or_nans(index, layer_tmp)
-        
-        print(gpt_layers[0].self_attention.layernorm_qkv.layer_norm_weight)
-        print("@@@@@@@@@@@@@@@@@@@@@@@@Post update SUCESSFUL@@@@@@@@@@@@@@@@@@@@")
-
+        for index, layer_tmp in enumerate(gpt_layers):
+            assert_all_parameters_zeros_or_nans(index, layer_tmp)
     timers('optimizer').stop()
 
     # Vision momentum.
@@ -686,8 +669,7 @@ def train_step(forward_step_func, data_iterator,
         for key in losses_reduced[0]:
             losses_reduced_for_key = [x[key] for x in losses_reduced]
             loss_reduced[key] = sum(losses_reduced_for_key) / len(losses_reduced_for_key)
-        if (torch.distributed.get_rank() == 0):
-            print(f" Forward Test Result Start: {loss_reduced} Forward Test Result End")
+
         return loss_reduced, skipped_iter, grad_norm, num_zeros_in_grad
     return {}, skipped_iter, grad_norm, num_zeros_in_grad
 
