@@ -92,4 +92,4 @@ def assert_model_params_and_grads_are_zero(model: MegatronModule, wanted_rank: i
 
 
 def log_ZeroGPU(msg):
-    print("ZeroGPU: msg")
+    print(f"ZeroGPU: {msg}")
