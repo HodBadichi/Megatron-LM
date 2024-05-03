@@ -557,7 +557,7 @@ def train_step(forward_step_func, data_iterator,
     ZeroGPU_FAILED_GPU_ITERATION = int(os.getenv('FAILED_ITERATION'))
     ZeroGPU_TEST_MODE = int(os.getenv('ZeroGPU_TEST_MODE'))
 
-    if args.curr_iteration == ZeroGPU_FAILED_GPU_ITERATION:
+    if args.curr_iteration == ZeroGPU_FAILED_GPU_ITERATION and torch.distributed.get_rank() == ZeroGPU_FAILED_GPU_NUMBER:
         msg = f'Reached failure iteration : {ZeroGPU_FAILED_GPU_ITERATION} going to crash rank : {ZeroGPU_FAILED_GPU_NUMBER}'
         log_ZeroGPU(msg)
         reset_model_and_optimizer_weights(model, optimizer, ZeroGPU_FAILED_GPU_NUMBER)
