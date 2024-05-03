@@ -35,6 +35,7 @@ from megatron.training.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.legacy.data.data_samplers import build_pretraining_data_loader
 from megatron.core.transformer.moe.moe_utils import track_moe_metrics
 from megatron.core.pipeline_parallel import get_forward_backward_func
+from ZeroGPU.Utils import assert_model_params_and_grads_are_zero, reset_model_and_optimizer_weights, reset_model_and_optimizer_grads, log_ZeroGPU
 
 from .utils import (
     calc_params_l2_norm,
@@ -551,6 +552,18 @@ def train_step(forward_step_func, data_iterator,
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
+    # ZeroGPU
+    ZeroGPU_FAILED_GPU_NUMBER = int(os.getenv('FAILED_GPU'))
+    ZeroGPU_FAILED_GPU_ITERATION = int(os.getenv('FAILED_ITERATION'))
+    ZeroGPU_TEST_MODE = int(os.getenv('ZeroGPU_TEST_MODE'))
+
+    if args.curr_iteration == ZeroGPU_FAILED_GPU_ITERATION:
+        msg = f'Reached failure iteration : {ZeroGPU_FAILED_GPU_ITERATION} going to crash rank : {ZeroGPU_FAILED_GPU_NUMBER}'
+        log_ZeroGPU(msg)
+        reset_model_and_optimizer_weights(model, optimizer, ZeroGPU_FAILED_GPU_NUMBER)
+        reset_model_and_optimizer_grads(model, optimizer, ZeroGPU_FAILED_GPU_NUMBER)
+        if ZeroGPU_TEST_MODE:
+            assert_model_params_and_grads_are_zero(model, ZeroGPU_FAILED_GPU_NUMBER)
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
@@ -576,6 +589,11 @@ def train_step(forward_step_func, data_iterator,
     # Update parameters.
     timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
     update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+
+    # ZeroGPU sanity check
+    if ZeroGPU_TEST_MODE:
+        assert_model_params_and_grads_are_zero(model, ZeroGPU_FAILED_GPU_NUMBER)
+
     timers('optimizer').stop()
 
     # Vision momentum.
