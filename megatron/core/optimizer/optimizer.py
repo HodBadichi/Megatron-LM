@@ -356,7 +356,8 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
             timers('optimizer-inner-step', log_level=1).start(
                 barrier=self.config.barrier_with_L1_time
             )
-        self.optimizer.step()
+        if torch.distributed.get_rank() != 1:
+            self.optimizer.step()
         if timers is not None:
             timers('optimizer-inner-step').stop()
 
