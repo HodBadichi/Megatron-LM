@@ -9,7 +9,7 @@ WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
 DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT"
 VOCAB_FILE=vocab.json
 MERGE_FILE=merges.txt
-DATA_PATH=wikisimple_text_document
+DATA_PATH=wikipedia_text_document
 GPT_ARGS="--num-layers 12
 --hidden-size 768
 --num-attention-heads 12
@@ -30,10 +30,15 @@ GPT_ARGS="--num-layers 12
 --eval-interval 200
 --eval-iters 10
 --attention-softmax-in-fp32
+--use-mcore-models
 "
+
+export FAILED_GPU=1
+export FAILED_ITERATION=5
+export ZeroGPU_TEST_MODE=1
 TENSORBOARD_ARGS="--tensorboard-dir experiments/tensorboard"
 python3 -m torch.distributed.launch $DISTRIBUTED_ARGS \
-        pretrain_gpt.py \
+        ../pretrain_gpt.py \
         --tensor-model-parallel-size 2 \
         --pipeline-model-parallel-size 1 \
         $GPT_ARGS \

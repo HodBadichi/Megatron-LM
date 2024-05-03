@@ -2,6 +2,7 @@
 
 import torch
 
+from ZeroGPU.Utils import is_zero_gpu_on, is_faulty_gpu
 from megatron.core.parallel_state import (
     get_tensor_model_parallel_group,
     get_tensor_model_parallel_rank,
@@ -21,7 +22,10 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
             logits_max, op=torch.distributed.ReduceOp.MAX, group=get_tensor_model_parallel_group()
         )
         # Subtract the maximum value.
-        vocab_parallel_logits = vocab_parallel_logits - logits_max.unsqueeze(dim=-1)
+        if is_zero_gpu_on() and is_faulty_gpu():
+            pass
+        else:
+            vocab_parallel_logits = vocab_parallel_logits - logits_max.unsqueeze(dim=-1)
 
         # Get the partition's vocab indecies
         get_vocab_range = VocabUtility.vocab_range_from_per_partition_vocab_size
@@ -54,7 +58,10 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
 
         # Sum of exponential of logits along vocab dimension across all GPUs.
         exp_logits = vocab_parallel_logits
-        torch.exp(vocab_parallel_logits, out=exp_logits)
+        if is_zero_gpu_on() and is_faulty_gpu():
+            pass
+        else:
+            torch.exp(vocab_parallel_logits, out=exp_logits)
         sum_exp_logits = exp_logits.sum(dim=-1)
         torch.distributed.all_reduce(
             sum_exp_logits,

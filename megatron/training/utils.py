@@ -97,8 +97,8 @@ def average_losses_across_data_parallel_group(losses):
     """Reduce a tensor of losses across all GPUs."""
     averaged_losses = torch.cat(
         [loss.clone().detach().view(1) for loss in losses])
-    torch.distributed.all_reduce(averaged_losses,
-                                 group=mpu.get_data_parallel_group())
+    #torch.distributed.all_reduce(averaged_losses,
+    #                             group=mpu.get_data_parallel_group())
     averaged_losses = averaged_losses / \
         torch.distributed.get_world_size(group=mpu.get_data_parallel_group())
 
@@ -316,15 +316,20 @@ def get_batch_on_this_tp_rank(data_iterator):
     else:
 
        tokens=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
+       tokens.zero_()
        labels=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
+       labels.zero_()
        loss_mask=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.float32 , device = torch.cuda.current_device())
+       loss_mask.zero_()
        if args.create_attention_mask_in_dataloader:
            attention_mask=torch.empty(
                 (args.micro_batch_size,1,args.seq_length,args.seq_length), dtype = torch.bool , device = torch.cuda.current_device()
             )
+           attention_mask.zero_()
        else:
            attention_mask=None
        position_ids=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
+       position_ids.zero_()
 
        if args.pipeline_model_parallel_size == 1:
            _broadcast(tokens)

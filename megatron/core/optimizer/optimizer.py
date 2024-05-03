@@ -12,6 +12,7 @@ import amp_C
 import torch
 from apex.multi_tensor_apply import multi_tensor_applier
 
+from ZeroGPU.Utils import is_faulty_gpu, is_zero_gpu_on
 from .. import parallel_state, tensor_parallel
 from ..dist_checkpointing.mapping import ShardedStateDict
 from ..dist_checkpointing.optimizer import (
@@ -286,6 +287,9 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
             main_grads, self.found_inf, self.grad_scaler.inv_scale
         )
 
+        if is_faulty_gpu() and is_zero_gpu_on():
+            self.found_inf.fill_(0.0)
+
         # Update across all model parallel instances.
         torch.distributed.all_reduce(
             self.found_inf, op=torch.distributed.ReduceOp.MAX, group=self.get_model_parallel_group()
@@ -356,7 +360,10 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
             timers('optimizer-inner-step', log_level=1).start(
                 barrier=self.config.barrier_with_L1_time
             )
-        self.optimizer.step()
+        if is_zero_gpu_on() and is_faulty_gpu():
+            pass
+        else:
+            self.optimizer.step()
         if timers is not None:
             timers('optimizer-inner-step').stop()
 
