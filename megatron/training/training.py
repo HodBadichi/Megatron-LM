@@ -558,6 +558,7 @@ def train_step(forward_step_func, data_iterator,
     ZeroGPU_TEST_MODE = int(os.getenv('ZeroGPU_TEST_MODE'))
 
     if args.curr_iteration == ZeroGPU_FAILED_GPU_ITERATION and torch.distributed.get_rank() == ZeroGPU_FAILED_GPU_NUMBER:
+        os.environ['ZeroGPU_ON'] = "1"
         msg = f'Reached failure iteration : {ZeroGPU_FAILED_GPU_ITERATION} going to crash rank : {ZeroGPU_FAILED_GPU_NUMBER}'
         log_ZeroGPU(msg)
         reset_model_and_optimizer_weights(model, optimizer, ZeroGPU_FAILED_GPU_NUMBER)
@@ -565,6 +566,7 @@ def train_step(forward_step_func, data_iterator,
         if ZeroGPU_TEST_MODE:
             assert_model_params_and_grads_are_zero(model, ZeroGPU_FAILED_GPU_NUMBER)
 
+    ZeroGPU_ON = int(os.getenv('ZeroGPU_ON', "0"))
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
     losses_reduced = forward_backward_func(
@@ -591,7 +593,7 @@ def train_step(forward_step_func, data_iterator,
     update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
 
     # ZeroGPU sanity check
-    if ZeroGPU_TEST_MODE:
+    if ZeroGPU_TEST_MODE and ZeroGPU_ON:
         assert_model_params_and_grads_are_zero(model, ZeroGPU_FAILED_GPU_NUMBER)
 
     timers('optimizer').stop()
