@@ -45,11 +45,12 @@ def _assert_all_parameters_zeros_or_nans(gpt_model: torch.nn.Module) -> None:
         _assert_all_parameters_zeros_or_nans(child)
 
 
-def reset_model_and_optimizer_grads(gpt_model: GPTModel, optimizer: Float16OptimizerWithFloat16Params,
+def reset_model_and_optimizer_grads(model, optimizer: Float16OptimizerWithFloat16Params,
                                     wanted_rank: int) -> None:
     if torch.distributed.get_rank() != wanted_rank:
         return
 
+    gpt_model = _get_gpt_from_model(model)
     _reset_module_grads_to_zero(gpt_model)
     optimizer._copy_model_grads_to_main_grads()
 
@@ -104,6 +105,7 @@ def _reset_module_gradients_to_zero(module: torch.nn.Module):
 
 def _get_gpt_from_model(model: MegatronModule) -> GPTModel:
     gpt_model = model[0]._modules['module'].module
+    print(f"@@@@@@@@@@{type(gpt_model)}@@@@@@@@@@@@@@@@")
     return gpt_model
 
 
