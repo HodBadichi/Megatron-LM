@@ -47,6 +47,26 @@ from .rendezvous import register_rendezvous_handler, rendezvous  # noqa: F401
 from ..utils._typing_utils import not_none
 DistStoreError = torch._C._DistStoreError
 
+def _all_zeros_or_nans(tensor):
+    nans_count = torch.sum(torch.isnan(tensor))
+    zeros_count = torch.sum(torch.eq(tensor, 0))
+    tmp_sum = nans_count + zeros_count
+    total_elements = torch.numel(tensor)
+    if total_elements != tmp_sum:
+        return False
+
+
+    return True
+
+
+def test_ZeroGPU(tensor):
+    zerogpu_on = int(os.getenv('ZeroGPU_ON', "0"))
+    faulty_rank = int(os.getenv("FAILED_GPU"))
+
+    if zerogpu_on and torch.distributed.get_rank() == faulty_rank:
+        if not _all_zeros_or_nans(tensor):
+            raise ValueError("Faulty Tensor isnt all Nans or Zeros!")
+
 __all__ = [
     'Backend', 'BackendConfig', 'GroupMember', 'P2POp', 'all_gather', 'all_gather_coalesced',
     'all_gather_object', 'all_reduce',
@@ -2030,6 +2050,7 @@ def broadcast(tensor, src, group=None, async_op=False):
         None, if not async_op or if not part of the group
 
     """
+    test_ZeroGPU(tensor)
     _check_single_tensor(tensor, "tensor")
     if _rank_not_in_group(group):
         _warn_not_in_group("broadcast")
@@ -2101,6 +2122,7 @@ def all_reduce(tensor, op=ReduceOp.SUM, group=None, async_op=False):
         tensor([4.+4.j, 6.+6.j], device='cuda:1') # Rank 1
 
     """
+    test_ZeroGPU(tensor)
     _check_single_tensor(tensor, "tensor")
     if _rank_not_in_group(group):
         _warn_not_in_group("all_reduce")
@@ -2167,6 +2189,9 @@ def all_reduce_coalesced(tensors, op=ReduceOp.SUM, group=None, async_op=False):
         None, if not async_op or if not part of the group.
 
     """
+    for tens in tensors:
+        test_ZeroGPU(tens)
+
     warnings.warn(
         "torch.distributed.all_reduce_coalesced will be deprecated. If you must "
         "use it, please revisit our documentation later at "
@@ -2221,6 +2246,7 @@ def reduce(tensor, dst, op=ReduceOp.SUM, group=None, async_op=False):
         None, if not async_op or if not part of the group
 
     """
+    test_ZeroGPU(tensor)
     _check_single_tensor(tensor, "tensor")
     if _rank_not_in_group(group):
         _warn_not_in_group("reduce")
@@ -2746,6 +2772,7 @@ def all_gather(tensor_list, tensor, group=None, async_op=False):
         [tensor([1.+1.j, 2.+2.j], device='cuda:1'), tensor([3.+3.j, 4.+4.j], device='cuda:1')] # Rank 1
 
     """
+    test_ZeroGPU(tensor)
     _check_tensor_list(tensor_list, "tensor_list")
     _check_single_tensor(tensor, "tensor")
     _ensure_all_tensors_same_dtype(tensor_list, tensor)
@@ -2939,6 +2966,9 @@ def all_gather_coalesced(
     performance improvements but users of this function should take extra care
     to ensure that each node passes in tensors whose shapes match across nodes.
     """
+    for tens in input_tensor_list:
+        test_ZeroGPU(tens)
+
     warnings.warn(
         "torch.distributed.all_gather_coalesced will be deprecated. If you must "
         "use it, please revisit our documentation later at "
@@ -3012,6 +3042,7 @@ def gather(tensor, gather_list=None, dst=0, group=None, async_op=False):
         None, if not async_op or if not part of the group
 
     """
+    test_ZeroGPU(tensor)
     _check_single_tensor(tensor, "tensor")
 
     # Parameter ``gather_list`` may be left unspecified on non-dst ranks.
@@ -3093,6 +3124,7 @@ def scatter(tensor, scatter_list=None, src=0, group=None, async_op=False):
         tensor([5., 5.])
 
     """
+    test_ZeroGPU(tensor)
     _check_single_tensor(tensor, "tensor")
 
     # Parameter ``scatter_list`` may be left unspecified on non-src ranks.
@@ -3165,6 +3197,8 @@ def reduce_scatter(output, input_list, op=ReduceOp.SUM, group=None, async_op=Fal
         None, if not async_op or if not part of the group.
 
     """
+    for input in input_list:
+        test_ZeroGPU(input)
     _check_single_tensor(output, "output")
     _check_tensor_list(input_list, "input_list")
     _ensure_all_tensors_same_dtype(output, input_list)
@@ -3400,6 +3434,8 @@ def all_to_all_single(
         tensor([3+3j, 7+7j, 11+11j, 15+15j])                            # Rank 2
         tensor([4+4j, 8+8j, 12+12j, 16+16j])                            # Rank 3
     """
+    test_ZeroGPU(input)
+
     if _rank_not_in_group(group):
         _warn_not_in_group("all_to_all_single")
         return
@@ -3524,6 +3560,9 @@ def all_to_all(output_tensor_list, input_tensor_list, group=None, async_op=False
         [tensor([4+4j]), tensor([8+8j]), tensor([12+12j]), tensor([16+16j])]        # Rank 3
 
     """
+    for tens in input_tensor_list:
+        test_ZeroGPU(tens)
+
     if _rank_not_in_group(group):
         _warn_not_in_group("all_to_all")
         return
