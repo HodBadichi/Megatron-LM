@@ -111,3 +111,80 @@ def _get_gpt_from_model(model: MegatronModule) -> GPTModel:
 
 def log_ZeroGPU(msg):
     print(f"ZeroGPU: {msg}")
+
+
+def zero_a_and_check_model_b(model: torch.nn.Module, optimizer):
+    """
+    1. Wait for both processes to arrive at the function.
+    2. Save the state of Model B (including submodules).
+    3. Perform actions on Model A.
+    4. Ensure Model B's parameters and gradients (including submodules) did not change due to the actions on Model A.
+    """
+    # Synchronize both processes
+    rank = torch.distributed.get_rank()
+    torch.distributed.barrier()
+
+    # Save the initial state of Model B's weights and gradients (including submodules)
+    if rank != 1:
+        initial_weights, initial_gradients = save_model_state(model)
+
+    torch.distributed.barrier()
+
+    if rank == 1:
+        reset_model_and_optimizer_weights(model, optimizer, wanted_rank=1)
+        reset_model_and_optimizer_grads(model, optimizer, wanted_rank=1)
+
+    torch.distributed.barrier()
+
+    # Check if Model B's weights and gradients have changed (including submodules)
+    if rank != 1:
+        weights_changed, gradients_changed = check_model_state(model, initial_weights, initial_gradients)
+    if rank != 1:
+        if weights_changed:
+            print("Weights of Model B (including submodules) have changed after actions on Model A.")
+        else:
+            print("Weights of Model B (including submodules) have not changed after actions on Model A.")
+
+        if gradients_changed:
+            print("Gradients of Model B (including submodules) have changed after actions on Model A.")
+        else:
+            print("Gradients of Model B (including submodules) have not changed after actions on Model A.")
+
+
+def save_model_state(model: torch.nn.Module):
+    """
+    Save the weights and gradients of a model (including submodules) in a recursive manner.
+    """
+    weights = []
+    gradients = []
+
+    def save_weights_and_gradients(module: torch.nn.Module):
+        for param in module.parameters(recurse=False):
+            weights.append(param.clone().detach())
+            gradients.append(param.grad.clone().detach() if param.grad is not None else None)
+
+    model.apply(save_weights_and_gradients)
+    return weights, gradients
+
+
+def check_model_state(model: torch.nn.Module, initial_weights, initial_gradients):
+    """
+    Check if the weights and gradients of a model (including submodules) have changed compared to the initial state.
+    """
+    weights_changed = False
+    gradients_changed = False
+
+    def check_weights_and_gradients(module):
+        nonlocal weights_changed, gradients_changed
+        for param, initial_weight, initial_grad in zip(module.parameters(recurse=False), initial_weights,
+                                                       initial_gradients):
+            if not torch.allclose(param, initial_weight):
+                weights_changed = True
+            if param.grad is not None and initial_grad is not None:
+                if not torch.allclose(param.grad, initial_grad):
+                    gradients_changed = True
+            elif (param.grad is None) != (initial_grad is None):
+                gradients_changed = True
+
+    model.apply(check_weights_and_gradients)
+    return weights_changed, gradients_changed
