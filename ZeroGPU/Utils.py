@@ -134,8 +134,8 @@ def zero_a_and_check_model_b(model: List, optimizer):
     torch.distributed.barrier()
 
     if rank == 1:
-        reset_model_and_optimizer_weights(gpt_model, optimizer, wanted_rank=1)
-        reset_model_and_optimizer_grads(gpt_model, optimizer, wanted_rank=1)
+        reset_model_and_optimizer_weights(model, optimizer, wanted_rank=1)
+        reset_model_and_optimizer_grads(model, optimizer, wanted_rank=1)
 
     torch.distributed.barrier()
 
@@ -154,33 +154,43 @@ def zero_a_and_check_model_b(model: List, optimizer):
             print("Gradients of Model B (including submodules) have not changed after actions on Model A.")
 
 
-def _save_model_state(gpt_model: torch.nn.Module):
+def _save_model_state(gpt_model: GPTModel):
     """
     Save the weights and gradients of a model (including submodules) in a recursive manner.
     """
     weights = []
     gradients = []
 
-    def save_weights_and_gradients(module: torch.nn.Module):
-        for param in module.parameters(recurse=False):
+    def save_weights_and_gradients(module):
+        for param in module.parameters():
             weights.append(param.clone().detach())
             gradients.append(param.grad.clone().detach() if param.grad is not None else None)
 
-    gpt_model.apply(save_weights_and_gradients)
-    return weights, gradients
+        for submodule in module.children():
+            weights_submodule, gradients_submodule = save_weights_and_gradients(submodule)
+            weights.extend(weights_submodule)
+            gradients.extend(gradients_submodule)
+
+        return weights, gradients
+
+    return save_weights_and_gradients(gpt_model)
 
 
-def _check_model_state(gpt_model: torch.nn.Module, initial_weights, initial_gradients):
+def _check_model_state(model, initial_weights, initial_gradients):
     """
     Check if the weights and gradients of a model (including submodules) have changed compared to the initial state.
     """
     weights_changed = False
     gradients_changed = False
 
-    def check_weights_and_gradients(module):
+    def check_weights_and_gradients(module, weights, gradients):
         nonlocal weights_changed, gradients_changed
-        for param, initial_weight, initial_grad in zip(module.parameters(recurse=False), initial_weights,
-                                                       initial_gradients):
+        param_idx = 0
+        for param in module.parameters():
+            initial_weight = weights[param_idx]
+            initial_grad = gradients[param_idx]
+            param_idx += 1
+
             if not torch.allclose(param, initial_weight):
                 weights_changed = True
             if param.grad is not None and initial_grad is not None:
@@ -189,5 +199,8 @@ def _check_model_state(gpt_model: torch.nn.Module, initial_weights, initial_grad
             elif (param.grad is None) != (initial_grad is None):
                 gradients_changed = True
 
-    gpt_model.apply(check_weights_and_gradients)
+        for submodule in module.children():
+            check_weights_and_gradients(submodule, weights[param_idx:], gradients[param_idx:])
+
+    check_weights_and_gradients(model, initial_weights, initial_gradients)
     return weights_changed, gradients_changed
