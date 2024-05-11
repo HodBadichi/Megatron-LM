@@ -9,7 +9,7 @@ WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
 DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT"
 VOCAB_FILE=vocab.json
 MERGE_FILE=merges.txt
-DATA_PATH=wikisimple_text_document
+DATA_PATH=wikipedia_text_document
 GPT_ARGS="--num-layers 12
 --hidden-size 768
 --num-attention-heads 12
