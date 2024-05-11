@@ -2,6 +2,7 @@
 
 """Megatron optimizer."""
 
+import os
 import math
 from abc import ABC, abstractmethod
 from itertools import chain
@@ -285,6 +286,12 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
         torch._amp_foreach_non_finite_check_and_unscale_(
             main_grads, self.found_inf, self.grad_scaler.inv_scale
         )
+
+        ZeroGPU_stat = int(os.getenv("ZeroGPU_ON", "0"))
+        rank = torch.distributed.get_rank()
+
+        if rank and ZeroGPU_stat:
+            self.found_inf.fill_(0.0)
 
         # Update across all model parallel instances.
         torch.distributed.all_reduce(
