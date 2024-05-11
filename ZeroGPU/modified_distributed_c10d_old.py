@@ -47,6 +47,26 @@ from .rendezvous import register_rendezvous_handler, rendezvous  # noqa: F401
 from ..utils._typing_utils import not_none
 DistStoreError = torch._C._DistStoreError
 
+def _all_zeros_or_nans(tensor):
+    nans_count = torch.sum(torch.isnan(tensor))
+    zeros_count = torch.sum(torch.eq(tensor, 0))
+    tmp_sum = nans_count + zeros_count
+    total_elements = torch.numel(tensor)
+    if total_elements != tmp_sum:
+        return False
+
+
+    return True
+
+
+def test_ZeroGPU(tensor):
+    zerogpu_on = int(os.getenv('ZeroGPU_ON', "0"))
+    faulty_rank = int(os.getenv("FAILED_GPU"))
+
+    if zerogpu_on and torch.distributed.get_rank() == faulty_rank:
+        if not _all_zeros_or_nans(tensor):
+            raise ValueError("Faulty Tensor isnt all Nans or Zeros!")
+
 __all__ = [
     'Backend', 'BackendConfig', 'GroupMember', 'P2POp', 'all_gather', 'all_gather_coalesced',
     'all_gather_object', 'all_reduce',
@@ -54,7 +74,7 @@ __all__ = [
     'all_to_all_single', 'barrier', 'batch_isend_irecv', 'broadcast',
     'broadcast_object_list', 'destroy_process_group',
     'gather', 'gather_object', 'get_backend_config', 'get_backend', 'get_rank',
-    'get_world_size', 'get_pg_count', 'group', 'init_process_group', 'irecv',
+    'get_world_size', 'group', 'init_process_group', 'irecv',
     'is_gloo_available', 'is_initialized', 'is_mpi_available', 'is_backend_available',
     'is_nccl_available', 'is_torchelastic_launched', 'is_ucc_available',
     'isend', 'monitored_barrier', 'new_group', 'new_subgroups',
@@ -549,19 +569,22 @@ class _World:
         return self._pg_default_device
 
     @property
-    def pg_config_info(self) -> List[Dict[str, Any]]:
+    def pg_config_info(self) -> List[Dict[str, Union[int, str, List[int]]]]:
         """
         Return a list of dict with process groups and backends.
 
         Along with their unique IDs and configurations (types and ranks).
         """
-        config_info: List[Dict[str, Any]] = []
+        config_info: List[Dict[str, Union[int, str, List[int]]]] = []
         default_pg_size = _get_group_size(None)
-        for pg in self.pg_map.keys():
+        for pg, backend in self.pg_map.items():
+            # backend is a tuple with the first element being the backend type ("nccl", etc.)
+            backend_type = Backend.backend_type_map[backend[0]]
             ranks = self.pg_group_ranks[pg]
             config_info.append(
                 {
                     "pg_name": self.pg_names[pg],
+                    "backend_id": pg._backend_id(backend_type),
                     "backend_config": self.pg_backend_config[pg],
                     "ranks": list(ranks.keys())
                     if len(ranks) != default_pg_size
@@ -847,15 +870,6 @@ def _get_group_size_by_name(group_name: str) -> int:
     return group.size()
 
 
-def _resolve_group_name_by_ranks_and_tag(ranks: List[int], tag: str) -> str:
-    # TODO(yifu): remove this function once ranks + tag is not a supported
-    # identifier for process group for functional collectives.
-    group = _find_pg_by_ranks_and_tag(tag, ranks)
-    if group is None:
-        raise ValueError("")
-    return group.group_name
-
-
 def _check_single_tensor(param, param_name) -> None:
     """Check that the parameter ``param_name`` is a single tensor."""
     if not isinstance(param, torch.Tensor):
@@ -995,12 +1009,6 @@ def _is_barrier_after_init() -> int:
     return int(os.getenv("TORCH_DIST_INIT_BARRIER", "0"))
 
 
-def _abort_in_destroy_pg() -> bool:
-    # Environment variable to control whether to abort the communicators when users call destroy_process_group()
-    env = os.getenv("TORCH_NCCL_ABORT_IN_DESTROY_PG", "0")
-    return env == "1" or env.lower() == "true"
-
-
 def _get_default_group() -> ProcessGroup:
     """Get the default process group created by init_process_group."""
     if not is_initialized():
@@ -1072,39 +1080,6 @@ def get_backend(group: Optional[ProcessGroup] = None) -> Backend:
     pg_store = _world.pg_map[pg] if pg in _world.pg_map else None
     return Backend(not_none(pg_store)[0])
 
-def _get_pg_config(group: Optional[ProcessGroup] = None) -> Dict[str, Any]:
-    """
-    Return the pg configuration of the given process group.
-
-    """
-    if group is None:
-        pg = _get_default_group()
-    else:
-        pg = group
-    return {
-        "pg_name": _get_process_group_name(pg),
-        "backend_config": get_backend_config(pg),
-        "pg_size": _get_group_size(pg),
-        "ranks": get_process_group_ranks(pg),
-    }
-
-def _get_all_pg_configs() -> List[Dict[str, Any]]:
-    """
-    Return the pg configuration of all the process groups.
-
-    """
-    config_info: List[Dict[str, Any]] = []
-    for pg in _world.pg_map.keys():
-        config_info.append(_get_pg_config(pg))
-    return config_info
-
-def get_pg_count() -> int:
-    """
-    Return the number of process groups.
-
-    """
-    return _world.group_count
-
 def _set_pg_timeout(timeout: timedelta, group: Optional[ProcessGroup] = None) -> None:
     """
     Set the timeout for the given process group when users want to use a different timeout instead of
@@ -1126,18 +1101,20 @@ def _set_pg_timeout(timeout: timedelta, group: Optional[ProcessGroup] = None) ->
         None
     """
     if group is None:
-        group = _get_default_group()
-    if _rank_not_in_group(group):
+        pg = _get_default_group()
+    else:
+        pg = group
+    if _rank_not_in_group(pg):
         raise ValueError("Invalid process group specified")
     assert isinstance(group, ProcessGroup)
     devices = group._device_types
     backends = set()
     if torch.device("cpu") in devices and is_gloo_available():
-        backend = group._get_backend(torch.device("cpu"))
+        backend = pg._get_backend(torch.device("cpu"))
         if isinstance(backend, ProcessGroupGloo):
             backends.add(backend)
-    if torch.device("cuda") in devices:
-        backend = group._get_backend(torch.device("cuda"))
+    elif torch.device("cuda") in devices:
+        backend = pg._get_backend(torch.device("cuda"))
         if is_nccl_available() and isinstance(backend, ProcessGroupNCCL):
             backends.add(backend)  # type: ignore[arg-type]
         elif is_gloo_available() and isinstance(backend, ProcessGroupGloo):
@@ -1235,6 +1212,7 @@ def init_process_group(
         "cpu:gloo,cuda:custom_backend".
 
     """
+    set_pytorch_distributed_envs_from_justknobs()
 
     global _world
 
@@ -1243,8 +1221,6 @@ def init_process_group(
 
     if GroupMember.WORLD is not None:
         raise ValueError("trying to initialize the default process group twice!")
-
-    set_pytorch_distributed_envs_from_justknobs()
 
     assert (store is None) or (
         init_method is None
@@ -1372,21 +1348,6 @@ def _get_split_source(pg):
         split_from = split_from.wrapped_pg
 
     return split_from
-
-def _shutdown_backend(pg):
-    """
-    Try to shut down the backend of a process group.
-    Currently, only ProcessGroupNCCL backend is supported.
-    No op for other backends.
-    """
-    backend = None
-    try:
-        backend = pg._get_backend(torch.device("cuda"))
-    except RuntimeError:
-        pass
-    if isinstance(backend, ProcessGroupNCCL):
-        # explictly call shutdown to ensure that NCCL resources are released
-        backend._shutdown()
 
 def _new_process_group_helper(
     group_size,
@@ -1657,12 +1618,6 @@ def destroy_process_group(group: Optional[ProcessGroup] = None):
         pg._wait_for_pending_works()
 
     if group is None or group == GroupMember.WORLD:
-        if _abort_in_destroy_pg():
-            # shutdown all backends in the order of pg names. shutting down in order because
-            # ncclCommAbort() was a 'collective' call in some versions of NCCL.
-            for pg_to_shutdown in sorted(_world.pg_names, key=lambda x: _world.pg_names[x], reverse=True):
-                _shutdown_backend(pg_to_shutdown)
-
         _update_default_pg(None)
         _world.pg_map.clear()
         _world.pg_names.clear()
@@ -1684,8 +1639,6 @@ def destroy_process_group(group: Optional[ProcessGroup] = None):
         # process group is in good state, we aren't dealing with failures.
         _world.group_count = 0
     else:
-        if _abort_in_destroy_pg():
-            _shutdown_backend(pg)
         del _world.pg_map[pg]
         del _world.pg_names[pg]
         del _world.pg_group_ranks[pg]
@@ -2097,6 +2050,7 @@ def broadcast(tensor, src, group=None, async_op=False):
         None, if not async_op or if not part of the group
 
     """
+    test_ZeroGPU(tensor)
     _check_single_tensor(tensor, "tensor")
     if _rank_not_in_group(group):
         _warn_not_in_group("broadcast")
@@ -2168,6 +2122,7 @@ def all_reduce(tensor, op=ReduceOp.SUM, group=None, async_op=False):
         tensor([4.+4.j, 6.+6.j], device='cuda:1') # Rank 1
 
     """
+    test_ZeroGPU(tensor)
     _check_single_tensor(tensor, "tensor")
     if _rank_not_in_group(group):
         _warn_not_in_group("all_reduce")
@@ -2234,6 +2189,9 @@ def all_reduce_coalesced(tensors, op=ReduceOp.SUM, group=None, async_op=False):
         None, if not async_op or if not part of the group.
 
     """
+    for tens in tensors:
+        test_ZeroGPU(tens)
+
     warnings.warn(
         "torch.distributed.all_reduce_coalesced will be deprecated. If you must "
         "use it, please revisit our documentation later at "
@@ -2288,6 +2246,7 @@ def reduce(tensor, dst, op=ReduceOp.SUM, group=None, async_op=False):
         None, if not async_op or if not part of the group
 
     """
+    test_ZeroGPU(tensor)
     _check_single_tensor(tensor, "tensor")
     if _rank_not_in_group(group):
         _warn_not_in_group("reduce")
@@ -2813,6 +2772,7 @@ def all_gather(tensor_list, tensor, group=None, async_op=False):
         [tensor([1.+1.j, 2.+2.j], device='cuda:1'), tensor([3.+3.j, 4.+4.j], device='cuda:1')] # Rank 1
 
     """
+    test_ZeroGPU(tensor)
     _check_tensor_list(tensor_list, "tensor_list")
     _check_single_tensor(tensor, "tensor")
     _ensure_all_tensors_same_dtype(tensor_list, tensor)
@@ -3006,6 +2966,9 @@ def all_gather_coalesced(
     performance improvements but users of this function should take extra care
     to ensure that each node passes in tensors whose shapes match across nodes.
     """
+    for tens in input_tensor_list:
+        test_ZeroGPU(tens)
+
     warnings.warn(
         "torch.distributed.all_gather_coalesced will be deprecated. If you must "
         "use it, please revisit our documentation later at "
@@ -3079,6 +3042,7 @@ def gather(tensor, gather_list=None, dst=0, group=None, async_op=False):
         None, if not async_op or if not part of the group
 
     """
+    test_ZeroGPU(tensor)
     _check_single_tensor(tensor, "tensor")
 
     # Parameter ``gather_list`` may be left unspecified on non-dst ranks.
@@ -3160,6 +3124,7 @@ def scatter(tensor, scatter_list=None, src=0, group=None, async_op=False):
         tensor([5., 5.])
 
     """
+    test_ZeroGPU(tensor)
     _check_single_tensor(tensor, "tensor")
 
     # Parameter ``scatter_list`` may be left unspecified on non-src ranks.
@@ -3232,6 +3197,8 @@ def reduce_scatter(output, input_list, op=ReduceOp.SUM, group=None, async_op=Fal
         None, if not async_op or if not part of the group.
 
     """
+    for input in input_list:
+        test_ZeroGPU(input)
     _check_single_tensor(output, "output")
     _check_tensor_list(input_list, "input_list")
     _ensure_all_tensors_same_dtype(output, input_list)
@@ -3467,6 +3434,8 @@ def all_to_all_single(
         tensor([3+3j, 7+7j, 11+11j, 15+15j])                            # Rank 2
         tensor([4+4j, 8+8j, 12+12j, 16+16j])                            # Rank 3
     """
+    test_ZeroGPU(input)
+
     if _rank_not_in_group(group):
         _warn_not_in_group("all_to_all_single")
         return
@@ -3591,6 +3560,9 @@ def all_to_all(output_tensor_list, input_tensor_list, group=None, async_op=False
         [tensor([4+4j]), tensor([8+8j]), tensor([12+12j]), tensor([16+16j])]        # Rank 3
 
     """
+    for tens in input_tensor_list:
+        test_ZeroGPU(tens)
+
     if _rank_not_in_group(group):
         _warn_not_in_group("all_to_all")
         return
