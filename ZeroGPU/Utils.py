@@ -1,3 +1,5 @@
+from typing import List
+
 import torch
 
 from megatron.core.models.gpt import GPTModel
@@ -113,7 +115,7 @@ def log_ZeroGPU(msg):
     print(f"ZeroGPU: {msg}")
 
 
-def zero_a_and_check_model_b(model: torch.nn.Module, optimizer):
+def zero_a_and_check_model_b(model: List, optimizer):
     """
     1. Wait for both processes to arrive at the function.
     2. Save the state of Model B (including submodules).
@@ -124,21 +126,22 @@ def zero_a_and_check_model_b(model: torch.nn.Module, optimizer):
     rank = torch.distributed.get_rank()
     torch.distributed.barrier()
 
+    gpt_model = _get_gpt_from_model(model)
     # Save the initial state of Model B's weights and gradients (including submodules)
     if rank != 1:
-        initial_weights, initial_gradients = save_model_state(model)
+        initial_weights, initial_gradients = _save_model_state(gpt_model)
 
     torch.distributed.barrier()
 
     if rank == 1:
-        reset_model_and_optimizer_weights(model, optimizer, wanted_rank=1)
-        reset_model_and_optimizer_grads(model, optimizer, wanted_rank=1)
+        reset_model_and_optimizer_weights(gpt_model, optimizer, wanted_rank=1)
+        reset_model_and_optimizer_grads(gpt_model, optimizer, wanted_rank=1)
 
     torch.distributed.barrier()
 
     # Check if Model B's weights and gradients have changed (including submodules)
     if rank != 1:
-        weights_changed, gradients_changed = check_model_state(model, initial_weights, initial_gradients)
+        weights_changed, gradients_changed = _check_model_state(gpt_model, initial_weights, initial_gradients)
     if rank != 1:
         if weights_changed:
             print("Weights of Model B (including submodules) have changed after actions on Model A.")
@@ -151,7 +154,7 @@ def zero_a_and_check_model_b(model: torch.nn.Module, optimizer):
             print("Gradients of Model B (including submodules) have not changed after actions on Model A.")
 
 
-def save_model_state(model: torch.nn.Module):
+def _save_model_state(gpt_model: torch.nn.Module):
     """
     Save the weights and gradients of a model (including submodules) in a recursive manner.
     """
@@ -163,11 +166,11 @@ def save_model_state(model: torch.nn.Module):
             weights.append(param.clone().detach())
             gradients.append(param.grad.clone().detach() if param.grad is not None else None)
 
-    model.apply(save_weights_and_gradients)
+    gpt_model.apply(save_weights_and_gradients)
     return weights, gradients
 
 
-def check_model_state(model: torch.nn.Module, initial_weights, initial_gradients):
+def _check_model_state(gpt_model: torch.nn.Module, initial_weights, initial_gradients):
     """
     Check if the weights and gradients of a model (including submodules) have changed compared to the initial state.
     """
@@ -186,5 +189,5 @@ def check_model_state(model: torch.nn.Module, initial_weights, initial_gradients
             elif (param.grad is None) != (initial_grad is None):
                 gradients_changed = True
 
-    model.apply(check_weights_and_gradients)
+    gpt_model.apply(check_weights_and_gradients)
     return weights_changed, gradients_changed
