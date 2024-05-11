@@ -145,16 +145,12 @@ def zero_a_and_check_model_b(model: List, optimizer):
     if rank != 1:
         model_state_path = f"model_state_{rank}.pt"
 
-        weights_changed, gradients_changed = _check_model_state(gpt_model, model_state_path)
-        if weights_changed:
-            print("Weights of Model B (including submodules) have changed after actions on Model A.")
+        model_changed = _check_model_state(gpt_model, model_state_path)
+        if model_changed:
+            print("Weights/Gradients of Model B (including submodules) have changed after actions on Model A.")
         else:
-            print("Weights of Model B (including submodules) have not changed after actions on Model A.")
+            print("Weights/Gradients of Model B (including submodules) have not changed after actions on Model A.")
 
-        if gradients_changed:
-            print("Gradients of Model B (including submodules) have changed after actions on Model A.")
-        else:
-            print("Gradients of Model B (including submodules) have not changed after actions on Model A.")
 
 
 def _check_model_state(old_model: torch.nn.Module, filename: str):
@@ -164,17 +160,5 @@ def _check_model_state(old_model: torch.nn.Module, filename: str):
     new_state_dict = torch.load(filename)
     old_state_dict = old_model.state_dict()
 
-    weights_changed = False
-    for key in old_state_dict:
-        if (new_state_dict[key] != old_state_dict[key]).any():
-            weights_changed = True
-            break
+    return new_state_dict.__str__() == old_state_dict.__str__()
 
-    gradients_changed = False
-    for key in old_state_dict:
-        if old_state_dict[key].grad is not None:
-            if (new_state_dict[key].grad != old_state_dict[key].grad).any():
-                gradients_changed = True
-                break
-
-    return weights_changed, gradients_changed
