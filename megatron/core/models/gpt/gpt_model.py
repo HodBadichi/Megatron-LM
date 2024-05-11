@@ -115,6 +115,7 @@ class GPTModel(LanguageModule):
                 self.embedding_activation_buffer = None
                 self.grad_output_buffer = None
 
+
             self.output_layer = tensor_parallel.ColumnParallelLinear(
                 config.hidden_size,
                 self.vocab_size,
@@ -177,7 +178,6 @@ class GPTModel(LanguageModule):
             # intermediate stage of pipeline
             # decoder will get hidden_states from encoder.input_tensor
             decoder_input = None
-
         # Rotary positional embeddings (embedding is None for PP intermediate devices)
         rotary_pos_emb = None
         if self.position_embedding_type == 'rope':
@@ -196,6 +196,7 @@ class GPTModel(LanguageModule):
             **(extra_block_kwargs or {}),
         )
 
+        rank = torch.distributed.get_rank()
         if not self.post_process:
             return hidden_states
 
@@ -204,13 +205,13 @@ class GPTModel(LanguageModule):
         if self.share_embeddings_and_output_weights:
             output_weight = self.shared_embedding_or_output_weight()
         logits, _ = self.output_layer(hidden_states, weight=output_weight)
+    
 
         if labels is None:
             # [s b h] => [b s h]
             return logits.transpose(0, 1).contiguous()
 
         loss = self.compute_language_model_loss(labels, logits)
-
         return loss
 
     def sharded_state_dict(
