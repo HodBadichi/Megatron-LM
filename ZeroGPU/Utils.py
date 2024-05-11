@@ -1,3 +1,4 @@
+import copy
 from typing import List
 
 import torch
@@ -129,7 +130,7 @@ def zero_a_and_check_model_b(model: List, optimizer):
     gpt_model = _get_gpt_from_model(model)
     # Save the initial state of Model B's weights and gradients (including submodules)
     if rank != 1:
-        initial_weights, initial_gradients = _save_model_state(gpt_model)
+        copied_model = copy.deepcopy(gpt_model)
 
     torch.distributed.barrier()
 
@@ -141,8 +142,7 @@ def zero_a_and_check_model_b(model: List, optimizer):
 
     # Check if Model B's weights and gradients have changed (including submodules)
     if rank != 1:
-        weights_changed, gradients_changed = _check_model_state(gpt_model, initial_weights, initial_gradients)
-    if rank != 1:
+        weights_changed, gradients_changed = _check_model_state(gpt_model, copied_model)
         if weights_changed:
             print("Weights of Model B (including submodules) have changed after actions on Model A.")
         else:
@@ -176,31 +176,36 @@ def _save_model_state(gpt_model: GPTModel):
     return save_weights_and_gradients(gpt_model)
 
 
-def _check_model_state(model, initial_weights, initial_gradients):
+def _check_model_state(old_model: torch.nn.Module, copied_model: torch.nn.Module):
     """
     Check if the weights and gradients of a model (including submodules) have changed compared to the initial state.
     """
     weights_changed = False
     gradients_changed = False
 
-    def check_weights_and_gradients(module, weights, gradients):
-        nonlocal weights_changed, gradients_changed
-        param_idx = 0
-        for param in module.parameters():
-            initial_weight = weights[param_idx]
-            initial_grad = gradients[param_idx]
-            param_idx += 1
+    # Flatten the parameters of both models
+    old_model_params = list(old_model.parameters())
+    copied_model_params = list(copied_model.parameters())
 
-            if not torch.allclose(param, initial_weight):
-                weights_changed = True
-            if param.grad is not None and initial_grad is not None:
-                if not torch.allclose(param.grad, initial_grad):
-                    gradients_changed = True
-            elif (param.grad is None) != (initial_grad is None):
+    # Check if the number of parameters is the same
+    if len(old_model_params) != len(copied_model_params):
+        raise ValueError("Models have different number of parameters")
+
+    # Iterate over the parameters of both models
+    for old_param, copied_param in zip(old_model_params, copied_model_params):
+        # Check if weights have changed
+        if not torch.allclose(old_param, copied_param):
+            weights_changed = True
+            break
+
+        # Check if gradients have changed
+        if old_param.grad is not None and copied_param.grad is not None:
+            if not torch.allclose(old_param.grad, copied_param.grad):
                 gradients_changed = True
+                break
+        elif (old_param.grad is None) != (copied_param.grad is None):
+            gradients_changed = True
+            break
 
-        for submodule in module.children():
-            check_weights_and_gradients(submodule, weights[param_idx:], gradients[param_idx:])
-
-    check_weights_and_gradients(model, initial_weights, initial_gradients)
     return weights_changed, gradients_changed
+
