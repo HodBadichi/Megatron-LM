@@ -163,9 +163,18 @@ def _check_model_state(old_model: torch.nn.Module, filename: str):
     """
     new_state_dict = torch.load(filename)
     old_state_dict = old_model.state_dict()
-    weights_changed = any(torch.any(new_state_dict[key] != old_state_dict[key]) for key in old_state_dict)
+
+    weights_changed = False
+    for key in old_state_dict:
+        if torch.any(new_state_dict[key] != old_state_dict[key]):
+            weights_changed = True
+            break
+
     gradients_changed = False
     for key in old_state_dict:
         if old_state_dict[key].grad is not None:
-            gradients_changed = gradients_changed or (new_state_dict[key].grad != old_state_dict[key].grad).any()
+            if torch.any(new_state_dict[key].grad != old_state_dict[key].grad):
+                gradients_changed = True
+                break
+
     return weights_changed, gradients_changed
