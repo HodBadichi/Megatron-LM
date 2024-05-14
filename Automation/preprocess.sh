@@ -7,7 +7,7 @@ python3 preprocess_helper.py
 
 
 
-python tools/preprocess_data.py \
+python ../tools/preprocess_data.py \
        --input wikipedia.json \
        --output-prefix wikipedia \
        --vocab-file vocab.json \

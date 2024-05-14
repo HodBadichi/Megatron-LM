@@ -30,10 +30,11 @@ GPT_ARGS="--num-layers 12
 --eval-interval 200
 --eval-iters 10
 --attention-softmax-in-fp32
+--use-mcore-models
 "
 TENSORBOARD_ARGS="--tensorboard-dir experiments/tensorboard"
 python3 -m torch.distributed.launch $DISTRIBUTED_ARGS \
-        pretrain_gpt.py \
+        ../pretrain_gpt.py \
         --tensor-model-parallel-size 2 \
         --pipeline-model-parallel-size 1 \
         $GPT_ARGS \
