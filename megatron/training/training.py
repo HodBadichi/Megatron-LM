@@ -35,7 +35,7 @@ from megatron.training.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.legacy.data.data_samplers import build_pretraining_data_loader
 from megatron.core.transformer.moe.moe_utils import track_moe_metrics
 from megatron.core.pipeline_parallel import get_forward_backward_func
-
+from Automation.Utils import get_failed_iteration, is_faulty_gpu, set_detached_gpu_on
 from .utils import (
     calc_params_l2_norm,
     check_adlr_autoresume_termination,
@@ -551,6 +551,16 @@ def train_step(forward_step_func, data_iterator,
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
+
+    failed_it = get_failed_iteration()
+
+    if args.curr_iteration == failed_it:
+        set_detached_gpu_on()
+        if is_faulty_gpu():
+            print("Faulty GPU entered deadlock...")
+            while True:
+                time.sleep(10)
+
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
